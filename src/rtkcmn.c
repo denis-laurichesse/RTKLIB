@@ -142,6 +142,7 @@
 *                           update obs code strings and priority table
 *                           use integer types in stdint.h
 *                           surppress warnings
+*           2026/03/20 1.46 frequency plan and added consistency with ANTEX PCO/PCV
 *-----------------------------------------------------------------------------*/
 #define _POSIX_C_SOURCE 199506
 #include <stdarg.h>
@@ -266,7 +267,8 @@ static char codepris[7][MAXFREQ][16]={  /* code priority for each freq-index */
     {"CABXZ"   ,"IQX"       ,"IQX"     ,"ABCXZ"  ,"IQX"    ,""      ,""}, /* GAL */
     {"CLSXZ"   ,"LSX"       ,"IQXDPZ"  ,"LSXEZ"  ,""       ,""      ,""}, /* QZS */
     {"C"       ,"IQX"       ,""        ,""       ,""       ,""      ,""}, /* SBS */
-    {"IQXDPAN" ,"IQXDPZ"    ,"DPX"     ,"IQXA"   ,"DPX"    ,""      ,""}, /* BDS */
+/*    {"IQXDPAN" ,"IQXDPZ"    ,"DPX"     ,"IQXA"   ,"DPX"    ,""      ,""}, */ /* BDS */
+    {"IQXDPAN" ,"IQXDPZ"    ,"IQXDPZ" ,"IQDPXQ"  ,"IQXDPA"  ,"DQXPZ"  ,""}, /* PATCH BDS3 */
     {"ABCX"    ,"ABCX"      ,""        ,""       ,""       ,""      ,""}  /* IRN */
 };
 static fatalfunc_t *fatalfunc=NULL; /* fatal callback function */
@@ -595,128 +597,190 @@ extern char *code2obs(uint8_t code)
     if (code<=CODE_NONE||MAXCODE<code) return "";
     return obscodes[code];
 }
-/* GPS obs code to frequency -------------------------------------------------*/
-static int code2freq_GPS(uint8_t code, double *freq)
+/* signal band -> internal RTKLIB frequency slot ---------------------------- */
+/* Single source of truth for the internal slot convention.
+ *
+ * band is the GNSS/ANTEX band number:
+ *   GPS : 1,2,5
+ *   GLO : 1,2,3,4,6
+ *   GAL : 1,5,6,7,8
+ *   QZS : 1,2,5,6
+ *   SBS : 1,5
+ *   BDS : 1,2,5,6,7,8
+ *   IRN : 5,9
+ */
+static int sigband2idx(int sys, int band)
 {
-    char *obs=code2obs(code);
-    
-    switch (obs[0]) {
-        case '1': *freq=FREQ1; return 0; /* L1 */
-        case '2': *freq=FREQ2; return 1; /* L2 */
-        case '5': *freq=FREQ5; return 2; /* L5 */
+    int idx = -1;
+
+    switch (sys) {
+    case SYS_GPS:
+        switch (band) {
+        case 1: idx = 0; break; /* L1 */
+        case 2: idx = 1; break; /* L2 */
+        case 5: idx = 2; break; /* L5 */
+        }
+        break;
+
+    case SYS_GLO:
+        switch (band) {
+        case 1: idx = 0; break; /* G1  */
+        case 2: idx = 1; break; /* G2  */
+        case 3: idx = 2; break; /* G3  */
+        case 4: idx = 3; break; /* G1a */
+        case 6: idx = 4; break; /* G2a */
+        }
+        break;
+
+    case SYS_GAL:
+        switch (band) {
+        case 1: idx = 0; break; /* E1   */
+        case 5: idx = 1; break; /* E5a  */
+        case 7: idx = 2; break; /* E5b  */
+        case 6: idx = 3; break; /* E6   */
+        case 8: idx = 4; break; /* E5ab */
+        }
+        break;
+
+    case SYS_QZS:
+        switch (band) {
+        case 1: idx = 0; break; /* L1 */
+        case 2: idx = 1; break; /* L2 */
+        case 5: idx = 2; break; /* L5 */
+        case 6: idx = 3; break; /* L6 */
+        }
+        break;
+
+    case SYS_SBS:
+        switch (band) {
+        case 1: idx = 0; break; /* L1 */
+        case 5: idx = 1; break; /* L5 */
+        }
+        break;
+
+    case SYS_CMP:
+        switch (band) {
+        case 2: idx = 0; break; /* B1I  */
+        case 7: idx = 1; break; /* B2I/B2b */
+        case 6: idx = 2; break; break; /* B3   */
+        case 1: idx = 3; break; /* B1C  */
+        case 5: idx = 4; break; /* B2a  */
+        case 8: idx = 5; break; /* B2ab */
+        }
+        break;
+
+    case SYS_IRN:
+        switch (band) {
+        case 5: idx = 0; break; /* L5 */
+        case 9: idx = 1; break; /* S  */
+        }
+        break;
     }
-    return -1;
+
+    if (idx >= NFREQ) {
+        return -1;
+    }
+
+    return idx;
 }
-/* GLONASS obs code to frequency ---------------------------------------------*/
-static int code2freq_GLO(uint8_t code, int fcn, double *freq)
+/* signal band -> carrier frequency [Hz] ----------------------------------- */
+/* fcn is only used for GLONASS FDMA */
+static double sigband2freq(int sys, int band, int fcn)
 {
-    char *obs=code2obs(code);
-    
-    if (fcn<-7||fcn>6) return -1;
-    
-    switch (obs[0]) {
-        case '1': *freq=FREQ1_GLO+DFRQ1_GLO*fcn; return 0; /* G1 */
-        case '2': *freq=FREQ2_GLO+DFRQ2_GLO*fcn; return 1; /* G2 */
-        case '3': *freq=FREQ3_GLO;               return 2; /* G3 */
-        case '4': *freq=FREQ1a_GLO;              return 0; /* G1a */
-        case '6': *freq=FREQ2a_GLO;              return 1; /* G2a */
+    switch (sys) {
+    case SYS_GPS:
+        switch (band) {
+        case 1: return FREQ1;
+        case 2: return FREQ2;
+        case 5: return FREQ5;
+        default: return 0.0;
+        }
+
+    case SYS_GLO:
+        switch (band) {
+        case 1: return FREQ1_GLO + DFRQ1_GLO * fcn;
+        case 2: return FREQ2_GLO + DFRQ2_GLO * fcn;
+        case 3: return FREQ3_GLO;
+        case 4: return FREQ1a_GLO;
+        case 6: return FREQ2a_GLO;
+        default: return 0.0;
+        }
+
+    case SYS_GAL:
+        switch (band) {
+        case 1: return FREQ1; /* E1   */
+        case 5: return FREQ5; /* E5a  */
+        case 6: return FREQ6; /* E6   */
+        case 7: return FREQ7; /* E5b  */
+        case 8: return FREQ8; /* E5ab */
+        default: return 0.0;
+        }
+
+    case SYS_QZS:
+        switch (band) {
+        case 1: return FREQ1;
+        case 2: return FREQ2;
+        case 5: return FREQ5;
+        case 6: return FREQ6;
+        default: return 0.0;
+        }
+
+    case SYS_SBS:
+        switch (band) {
+        case 1: return FREQ1;
+        case 5: return FREQ5;
+        default: return 0.0;
+        }
+
+    case SYS_CMP:
+        switch (band) {
+        case 1: return FREQ1;      /* B1C  */
+        case 2: return FREQ1_CMP;  /* B1I  */
+        case 5: return FREQ5;      /* B2a  */
+        case 6: return FREQ3_CMP;  /* B3   */
+        case 7: return FREQ2_CMP;  /* B2I/B2b */
+        case 8: return FREQ8;      /* B2ab */
+        default: return 0.0;
+        }
+
+    case SYS_IRN:
+        switch (band) {
+        case 5: return FREQ5; /* L5 */
+        case 9: return FREQ9; /* S  */
+        default: return 0.0;
+        }
     }
-    return -1;
+    return 0.0;
 }
-/* Galileo obs code to frequency ---------------------------------------------*/
-static int code2freq_GAL(uint8_t code, double *freq)
+
+/* observation code -> GNSS band number ------------------------------------ */
+static int code2sigband(uint8_t code)
 {
-    char *obs=code2obs(code);
-    
+    const char *obs=code2obs(code);
+
+    if (!obs||!obs[0]) return 0;
+
     switch (obs[0]) {
-        case '1': *freq=FREQ1; return 0; /* E1 */
-        case '7': *freq=FREQ7; return 1; /* E5b */
-        case '5': *freq=FREQ5; return 2; /* E5a */
-        case '6': *freq=FREQ6; return 3; /* E6 */
-        case '8': *freq=FREQ8; return 4; /* E5ab */
+    case '1': return 1;
+    case '2': return 2;
+    case '3': return 3;
+    case '4': return 4;
+    case '5': return 5;
+    case '6': return 6;
+    case '7': return 7;
+    case '8': return 8;
+    case '9': return 9;
     }
-    return -1;
+    return 0;
 }
-/* QZSS obs code to frequency ------------------------------------------------*/
-static int code2freq_QZS(uint8_t code, double *freq)
-{
-    char *obs=code2obs(code);
-    
-    switch (obs[0]) {
-        case '1': *freq=FREQ1; return 0; /* L1 */
-        case '2': *freq=FREQ2; return 1; /* L2 */
-        case '5': *freq=FREQ5; return 2; /* L5 */
-        case '6': *freq=FREQ6; return 3; /* L6 */
-    }
-    return -1;
-}
-/* SBAS obs code to frequency ------------------------------------------------*/
-static int code2freq_SBS(uint8_t code, double *freq)
-{
-    char *obs=code2obs(code);
-    
-    switch (obs[0]) {
-        case '1': *freq=FREQ1; return 0; /* L1 */
-        case '5': *freq=FREQ5; return 1; /* L5 */
-    }
-    return -1;
-}
-/* BDS obs code to frequency -------------------------------------------------*/
-static int code2freq_BDS(uint8_t code, double *freq)
-{
-    char *obs=code2obs(code);
-    
-    switch (obs[0]) {
-        case '1': *freq=FREQ1;     return 0; /* B1C */
-        case '2': *freq=FREQ1_CMP; return 0; /* B1I */
-        case '7': *freq=FREQ2_CMP; return 1; /* B2I/B2b */
-        case '5': *freq=FREQ5;     return 2; /* B2a */
-        case '6': *freq=FREQ3_CMP; return 3; /* B3 */
-        case '8': *freq=FREQ8;     return 4; /* B2ab */
-    }
-    return -1;
-}
-/* NavIC obs code to frequency -----------------------------------------------*/
-static int code2freq_IRN(uint8_t code, double *freq)
-{
-    char *obs=code2obs(code);
-    
-    switch (obs[0]) {
-        case '5': *freq=FREQ5; return 0; /* L5 */
-        case '9': *freq=FREQ9; return 1; /* S */
-    }
-    return -1;
-}
-/* system and obs code to frequency index --------------------------------------
-* convert system and obs code to frequency index
-* args   : int    sys       I   satellite system (SYS_???)
-*          uint8_t code     I   obs code (CODE_???)
-* return : frequency index (-1: error)
-*                       0     1     2     3     4 
-*           --------------------------------------
-*            GPS       L1    L2    L5     -     - 
-*            GLONASS   G1    G2    G3     -     -  (G1=G1,G1a,G2=G2,G2a)
-*            Galileo   E1    E5b   E5a   E6   E5ab
-*            QZSS      L1    L2    L5    L6     - 
-*            SBAS      L1     -    L5     -     -
-*            BDS       B1    B2    B2a   B3   B2ab (B1=B1I,B1C,B2=B2I,B2b)
-*            NavIC     L5     S     -     -     - 
-*-----------------------------------------------------------------------------*/
+
+/* obs code to frequency index --------------------------------------------- */
 extern int code2idx(int sys, uint8_t code)
 {
-    double freq;
-    
-    switch (sys) {
-        case SYS_GPS: return code2freq_GPS(code,&freq);
-        case SYS_GLO: return code2freq_GLO(code,0,&freq);
-        case SYS_GAL: return code2freq_GAL(code,&freq);
-        case SYS_QZS: return code2freq_QZS(code,&freq);
-        case SYS_SBS: return code2freq_SBS(code,&freq);
-        case SYS_CMP: return code2freq_BDS(code,&freq);
-        case SYS_IRN: return code2freq_IRN(code,&freq);
-    }
-    return -1;
+    int band=code2sigband(code);
+    return band ? sigband2idx(sys, band) : -1;
 }
+
 /* system and obs code to frequency --------------------------------------------
 * convert system and obs code to carrier frequency
 * args   : int    sys       I   satellite system (SYS_???)
@@ -726,19 +790,11 @@ extern int code2idx(int sys, uint8_t code)
 *-----------------------------------------------------------------------------*/
 extern double code2freq(int sys, uint8_t code, int fcn)
 {
-    double freq=0.0;
-    
-    switch (sys) {
-        case SYS_GPS: (void)code2freq_GPS(code,&freq); break;
-        case SYS_GLO: (void)code2freq_GLO(code,fcn,&freq); break;
-        case SYS_GAL: (void)code2freq_GAL(code,&freq); break;
-        case SYS_QZS: (void)code2freq_QZS(code,&freq); break;
-        case SYS_SBS: (void)code2freq_SBS(code,&freq); break;
-        case SYS_CMP: (void)code2freq_BDS(code,&freq); break;
-        case SYS_IRN: (void)code2freq_IRN(code,&freq); break;
-    }
-    return freq;
+    int band=code2sigband(code);
+    return band ? sigband2freq(sys, band, fcn) : 0.0;
 }
+
+
 /* satellite and obs code to frequency -----------------------------------------
 * convert satellite and obs code to carrier frequency
 * args   : int    sat       I   satellite number
@@ -748,25 +804,44 @@ extern double code2freq(int sys, uint8_t code, int fcn)
 *-----------------------------------------------------------------------------*/
 extern double sat2freq(int sat, uint8_t code, const nav_t *nav)
 {
-    int i,fcn=0,sys,prn;
-    
+    int i, sys, prn, fcn=0;
+
     sys=satsys(sat,&prn);
-    
+
     if (sys==SYS_GLO) {
         if (!nav) return 0.0;
-        for (i=0;i<nav->ng;i++) {
-            if (nav->geph[i].sat==sat) break;
-        }
-        if (i<nav->ng) {
-            fcn=nav->geph[i].frq;
-        }
-        else if (nav->glo_fcn[prn-1]>0) {
+
+        if (0<prn&&prn<=MAXPRNGLO&&nav->glo_fcn[prn-1]!=0) {
             fcn=nav->glo_fcn[prn-1]-8;
         }
-        else return 0.0;
+        else {
+            for (i=0;i<nav->ng;i++) {
+                if (nav->geph[i].sat==sat) {
+                    fcn=nav->geph[i].frq;
+                    break;
+                }
+            }
+        }
     }
     return code2freq(sys,code,fcn);
 }
+
+/* ANTEX frequency label -> internal slot ---------------------------------- */
+static int antexfreq2idx(int sat, char f_sys, int f)
+{
+    int sys;
+
+    if (sat) {
+        sys=satsys(sat,NULL);
+    }
+    else {
+        if (f_sys!='G') return -1;
+        sys=SYS_GPS;
+    }
+    return sigband2idx(sys,f);
+}
+
+
 /* set code priority -----------------------------------------------------------
 * set code priority for multiple codes in a frequency
 * args   : int    sys       I   system (or of SYS_???)
@@ -2342,69 +2417,79 @@ static int readngspcv(const char *file, pcvs_t *pcvs)
 static int readantex(const char *file, pcvs_t *pcvs)
 {
     FILE *fp;
-    static const pcv_t pcv0={0};
+    static const pcv_t pcv0 = {0};
     pcv_t pcv;
     double neu[3];
-    int i,f,freq=0,state=0,freqs[]={1,2,5,0};
+    int i, f, freq = 0, state = 0;
+    char f_sys = '\0';
     char buff[256];
-    
-    trace(3,"readantex: file=%s\n",file);
-    
-    if (!(fp=fopen(file,"r"))) {
-        trace(2,"antex pcv file open error: %s\n",file);
+
+    trace(3, "readantex: file=%s\n", file);
+
+    if (!(fp = fopen(file, "r"))) {
+        trace(2, "antex pcv file open error: %s\n", file);
         return 0;
     }
-    while (fgets(buff,sizeof(buff),fp)) {
-        
-        if (strlen(buff)<60||strstr(buff+60,"COMMENT")) continue;
-        
-        if (strstr(buff+60,"START OF ANTENNA")) {
-            pcv=pcv0;
-            state=1;
+
+    while (fgets(buff, sizeof(buff), fp)) {
+
+        if (strlen(buff) < 60 || strstr(buff + 60, "COMMENT")) continue;
+
+        if (strstr(buff + 60, "START OF ANTENNA")) {
+            pcv = pcv0;
+            state = 1;
         }
-        if (strstr(buff+60,"END OF ANTENNA")) {
-            addpcv(&pcv,pcvs);
-            state=0;
+        if (strstr(buff + 60, "END OF ANTENNA")) {
+            addpcv(&pcv, pcvs);
+            state = 0;
         }
         if (!state) continue;
-        
-        if (strstr(buff+60,"TYPE / SERIAL NO")) {
-            strncpy(pcv.type,buff   ,20); pcv.type[20]='\0';
-            strncpy(pcv.code,buff+20,20); pcv.code[20]='\0';
-            if (!strncmp(pcv.code+3,"        ",8)) {
-                pcv.sat=satid2no(pcv.code);
+
+        if (strstr(buff + 60, "TYPE / SERIAL NO")) {
+            strncpy(pcv.type, buff, 20);
+            pcv.type[20] = '\0';
+            strncpy(pcv.code, buff + 20, 20);
+            pcv.code[20] = '\0';
+
+            if (!strncmp(pcv.code + 3, "        ", 8)) {
+                pcv.sat = satid2no(pcv.code);
             }
         }
-        else if (strstr(buff+60,"VALID FROM")) {
-            if (!str2time(buff,0,43,&pcv.ts)) continue;
+        else if (strstr(buff + 60, "VALID FROM")) {
+            if (!str2time(buff, 0, 43, &pcv.ts)) continue;
         }
-        else if (strstr(buff+60,"VALID UNTIL")) {
-            if (!str2time(buff,0,43,&pcv.te)) continue;
+        else if (strstr(buff + 60, "VALID UNTIL")) {
+            if (!str2time(buff, 0, 43, &pcv.te)) continue;
         }
-        else if (strstr(buff+60,"START OF FREQUENCY")) {
-            if (!pcv.sat&&buff[3]!='G') continue; /* only read rec ant for GPS */
-            if (sscanf(buff+4,"%d",&f)<1) continue;
-            for (i=0;freqs[i];i++) if (freqs[i]==f) break;
-            if (freqs[i]) freq=i+1;
+		else if (strstr(buff+60,"START OF FREQUENCY")) {
+			if (sscanf(buff+3,"%c%2d",&f_sys,&f)<2) continue;
+
+			i=antexfreq2idx(pcv.sat,f_sys,f);
+			if (i<0||i>=NFREQ) {
+				freq=0;
+				continue;
+			}
+			freq=i+1;
+		}
+        else if (strstr(buff + 60, "END OF FREQUENCY")) {
+            freq = 0;
         }
-        else if (strstr(buff+60,"END OF FREQUENCY")) {
-            freq=0;
+        else if (strstr(buff + 60, "NORTH / EAST / UP")) {
+            if (freq < 1 || freq > NFREQ) continue;
+            if (decodef(buff, 3, neu) < 3) continue;
+
+            pcv.off[freq - 1][0] = neu[pcv.sat ? 0 : 1]; /* x or e */
+            pcv.off[freq - 1][1] = neu[pcv.sat ? 1 : 0]; /* y or n */
+            pcv.off[freq - 1][2] = neu[2];               /* z or u */
         }
-        else if (strstr(buff+60,"NORTH / EAST / UP")) {
-            if (freq<1||NFREQ<freq) continue;
-            if (decodef(buff,3,neu)<3) continue;
-            pcv.off[freq-1][0]=neu[pcv.sat?0:1]; /* x or e */
-            pcv.off[freq-1][1]=neu[pcv.sat?1:0]; /* y or n */
-            pcv.off[freq-1][2]=neu[2];           /* z or u */
-        }
-        else if (strstr(buff,"NOAZI")) {
-            if (freq<1||NFREQ<freq) continue;
-            if ((i=decodef(buff+8,19,pcv.var[freq-1]))<=0) continue;
-            for (;i<19;i++) pcv.var[freq-1][i]=pcv.var[freq-1][i-1];
+        else if (strstr(buff, "NOAZI")) {
+            if (freq < 1 || freq > NFREQ) continue;
+            if ((i = decodef(buff + 8, 19, pcv.var[freq - 1])) <= 0) continue;
+            for (; i < 19; i++) pcv.var[freq - 1][i] = pcv.var[freq - 1][i - 1];
         }
     }
     fclose(fp);
-    
+
     return 1;
 }
 /* read antenna parameters ------------------------------------------------------
@@ -2421,29 +2506,38 @@ extern int readpcv(const char *file, pcvs_t *pcvs)
 {
     pcv_t *pcv;
     char *ext;
-    int i,j,stat;
-    
-    trace(3,"readpcv: file=%s\n",file);
-    
-    if (!(ext=strrchr(file,'.'))) ext="";
-    
-    if (!strcmp(ext,".atx")||!strcmp(ext,".ATX")) {
-        stat=readantex(file,pcvs);
+    int i, j, stat;
+
+    trace(3, "readpcv: file=%s\n", file);
+
+    if (!(ext = strrchr(file, '.'))) ext = "";
+
+    if (!strcmp(ext, ".atx") || !strcmp(ext, ".ATX")) {
+        stat = readantex(file, pcvs);
     }
     else {
-        stat=readngspcv(file,pcvs);
+        stat = readngspcv(file, pcvs);
     }
-    for (i=0;i<pcvs->n;i++) {
-        pcv=pcvs->pcv+i;
-        trace(4,"sat=%2d type=%20s code=%s off=%8.4f %8.4f %8.4f  %8.4f %8.4f %8.4f\n",
-              pcv->sat,pcv->type,pcv->code,pcv->off[0][0],pcv->off[0][1],
-              pcv->off[0][2],pcv->off[1][0],pcv->off[1][1],pcv->off[1][2]);
-        
-        /* apply L2 to L3,L4,... if no pcv data */
-        for (j=2;j<NFREQ;j++) { /* L3,L4,... */
-            if (norm(pcv->off[j],3)>0.0) continue;
-            matcpy(pcv->off[j],pcv->off[1], 3,1);
-            matcpy(pcv->var[j],pcv->var[1],19,1);
+
+    for (i = 0; i < pcvs->n; i++) {
+        pcv = pcvs->pcv + i;
+
+        trace(4,
+              "sat=%2d type=%20s code=%s off=%8.4f %8.4f %8.4f  %8.4f %8.4f %8.4f\n",
+              pcv->sat, pcv->type, pcv->code,
+              pcv->off[0][0], pcv->off[0][1], pcv->off[0][2],
+              pcv->off[1][0], pcv->off[1][1], pcv->off[1][2]);
+
+        /* Legacy fallback kept only for receiver antennas.
+         * For satellites, copying slot 1 into higher slots would break the
+         * new code2idx()-compatible slot semantics.
+         */
+        if (pcv->sat == 0) {
+            for (j = 2; j < NFREQ; j++) {
+                if (norm(pcv->off[j], 3) > 0.0) continue;
+                matcpy(pcv->off[j], pcv->off[1], 3, 1);
+                matcpy(pcv->var[j], pcv->var[1], 19, 1);
+            }
         }
     }
     return stat;

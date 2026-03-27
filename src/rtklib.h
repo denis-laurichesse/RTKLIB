@@ -27,6 +27,7 @@
 *           2011/05/27 1.9  rtklib ver.2.4.1
 *           2013/03/28 1.10 rtklib ver.2.4.2
 *           2020/11/30 1.11 rtklib ver.2.4.3 b34
+*           2026/03/16 1.12 rtklib ver.2.4.3 b35
 *-----------------------------------------------------------------------------*/
 #ifndef RTKLIB_H
 #define RTKLIB_H
@@ -127,7 +128,7 @@ extern "C" {
 #define TSYS_IRN    6                   /* time system: IRNSS time */
 
 #ifndef NFREQ
-#define NFREQ       3                   /* number of carrier frequencies */
+#define NFREQ       6                   /* number of carrier frequencies */
 #endif
 #define NFREQGLO    2                   /* number of carrier frequencies of GLONASS */
 
@@ -354,6 +355,10 @@ extern "C" {
 #define CODE_L4B    67                  /* obs code: G1aL1OCd   (GLO) */
 #define CODE_L4X    68                  /* obs code: G1al1OCd+p (GLO) */
 #define MAXCODE     68                  /* max number of obs code */
+
+/* Bias measurement type (first character of the SINEX OBS field) ----------*/
+#define BIAS_CODE  0    /* pseudorange bias   - SINEX prefix 'C'           */
+#define BIAS_PHASE 1    /* carrier-phase bias - SINEX prefix 'L'           */
 
 #define PMODE_SINGLE 0                  /* positioning mode: single */
 #define PMODE_DGPS   1                  /* positioning mode: DGPS/DGNSS */
@@ -785,6 +790,30 @@ typedef struct {        /* SSR correction type */
     uint8_t update;     /* update flag (0:no update,1:update) */
 } ssr_t;
 
+typedef struct {
+    int     sat;    /* RTKLIB satellite number (satno())                   */
+    uint8_t code;   /* signal modulation - RTKLIB CODE_* (obs2code())     */
+    int     type;   /* measurement type: BIAS_CODE or BIAS_PHASE           */
+    gtime_t ts;     /* validity start time (GPST)                          */
+    gtime_t te;     /* validity end   time (GPST)                          */
+    double  bias;   /* bias value (m)                                      */
+    double  std;    /* standard deviation (m), 0 if not provided           */
+} osb_t;
+
+typedef struct {
+    int key;    /* packed key, OSB_EMPTY_SLOT (-1) when slot is unused     */
+    int idx;    /* index of the first matching record in data[]            */
+    int n;      /* number of consecutive records with this key             */
+} osbslot_t;
+
+typedef struct osbdata_t {
+    int       n;           /* number of records in data[]                  */
+    int       nmax;        /* allocated capacity of data[]                 */
+    osb_t    *data;        /* records, sorted by (sat, code, type, ts)     */
+    osbslot_t *htbl;       /* open-addressing hash table                   */
+    int        htbl_size;  /* number of slots (always a power of two)      */
+} osbdata_t;
+
 typedef struct {        /* navigation data type */
     int n,nmax;         /* number of broadcast ephemeris */
     int ng,ngmax;       /* number of glonass ephemeris */
@@ -816,6 +845,7 @@ typedef struct {        /* navigation data type */
     int glo_fcn[32];    /* GLONASS FCN + 8 */
     double cbias[MAXSAT][3]; /* satellite DCB (0:P1-P2,1:P1-C1,2:P2-C2) (m) */
     double rbias[MAXRCV][2][3]; /* receiver DCB (0:P1-P2,1:P1-C1,2:P2-C2) (m) */
+    osbdata_t *osb;     /* SINEX observable-specific biases */
     pcv_t pcvs[MAXSAT]; /* satellite antenna pcv */
     sbssat_t sbssat;    /* SBAS satellite corrections */
     sbsion_t sbsion[MAXBAND+1]; /* SBAS ionosphere corrections */
@@ -1045,6 +1075,7 @@ typedef struct {        /* file options type */
     char geoid  [MAXSTRPATH]; /* external geoid data file */
     char iono   [MAXSTRPATH]; /* ionosphere data file */
     char dcb    [MAXSTRPATH]; /* dcb data file */
+    char snxbias[MAXSTRPATH]; /* SINEX bias (OSB) file */
     char eop    [MAXSTRPATH]; /* eop data file */
     char blq    [MAXSTRPATH]; /* ocean tide loading blq file */
     char tempdir[MAXSTRPATH]; /* ftp/http temporaly directory */
@@ -1497,6 +1528,14 @@ EXPORT int  init_rnxctr (rnxctr_t *rnx);
 EXPORT void free_rnxctr (rnxctr_t *rnx);
 EXPORT int  open_rnxctr (rnxctr_t *rnx, FILE *fp);
 EXPORT int  input_rnxctr(rnxctr_t *rnx, FILE *fp);
+
+/* sinex bias functions */
+EXPORT int readsinexbias(const char *file, osbdata_t *osb, const nav_t *nav);
+EXPORT int getsinexbias(const osbdata_t *osb, gtime_t time, int sat,
+                 uint8_t code, int type, const nav_t *nav,
+                 int fallback_mask,
+                 double *bias, double *std, uint8_t *code_used);
+EXPORT void freesinexbias(osbdata_t *osb);
 
 /* ephemeris and clock functions ---------------------------------------------*/
 EXPORT double eph2clk (gtime_t time, const eph_t  *eph);

@@ -43,6 +43,7 @@
 *                            fix bug on select best solution in static mode
 *                            delete function to use L2 instead of L5 PCV
 *                            writing solution file in binary mode
+*           2026/03/20  1.25 sinex bias support
 *-----------------------------------------------------------------------------*/
 #include "rtklib.h"
 
@@ -648,7 +649,7 @@ static int readobsnav(gtime_t ts, gtime_t te, double ti, char **infile,
     }
     return 1;
 }
-/* free obs and nav data -----------------------------------------------------*/
+/* free obs, nav, and sinex data -----------------------------------------------------*/
 static void freeobsnav(obs_t *obs, nav_t *nav)
 {
     trace(3,"freeobsnav:\n");
@@ -657,6 +658,12 @@ static void freeobsnav(obs_t *obs, nav_t *nav)
     free(nav->eph ); nav->eph =NULL; nav->n =nav->nmax =0;
     free(nav->geph); nav->geph=NULL; nav->ng=nav->ngmax=0;
     free(nav->seph); nav->seph=NULL; nav->ns=nav->nsmax=0;
+
+    if (nav->osb) {
+        freesinexbias(nav->osb);
+        free(nav->osb);
+        nav->osb=NULL;
+    }
 }
 /* average of single position ------------------------------------------------*/
 static int avepos(double *ra, int rcv, const obs_t *obs, const nav_t *nav,
@@ -906,7 +913,8 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     FILE *fp;
     prcopt_t popt_=*popt;
     char tracefile[1024],statfile[1024],path[1024],*ext;
-    
+    int nsnx;
+	 
     trace(3,"execses : n=%d outfile=%s\n",n,outfile);
     
     /* open debug trace */
@@ -941,6 +949,30 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     /* read obs and nav data */
     if (!readobsnav(ts,te,ti,infile,index,n,&popt_,&obss,&navs,stas)) return 0;
     
+    /* read SINEX bias parameters */
+    if (*fopt->snxbias) {
+        reppath(fopt->snxbias,path,ts,"","");
+
+        if (!navs.osb && !(navs.osb=(osbdata_t *)calloc(1,sizeof(osbdata_t)))) {
+            showmsg("error : no memory for sinex bias");
+            trace(1,"no memory for sinex bias\n");
+            return 0;
+        }
+        if (navs.osb) {
+            freesinexbias(navs.osb);
+
+            nsnx=readsinexbias(path,navs.osb,&navs);
+            if (nsnx<0) {
+                showmsg("error : no sinex bias data %s",path);
+                trace(2,"no sinex bias data %s\n",path);
+                freesinexbias(navs.osb);
+            }
+            else {
+                trace(3,"read sinex bias data: n=%d file=%s\n",nsnx,path);
+            }
+        }
+    }
+
     /* read dcb parameters */
     if (*fopt->dcb) {
         reppath(fopt->dcb,path,ts,"","");

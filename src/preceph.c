@@ -48,6 +48,7 @@
 *                           LC defined GPS/QZS L1-L2, GLO G1-G2, GAL E1-E5b,
 *                            BDS B1I-B2I and IRN L5-S for API satantoff()
 *                           fix bug on reading SP3 file extension
+*           2026/03/10 1.18 fix bug #152
 *-----------------------------------------------------------------------------*/
 #include "rtklib.h"
 
@@ -88,7 +89,7 @@ static int readsp3h(FILE *fp, gtime_t *time, char *type, int *sats,
         }
         else if (!strncmp(buff,"+ ",2)) { /* satellite id */
             if (ns==0) {
-                ns=(int)str2num(buff,4,2);
+                ns=(int)str2num(buff,3,3);
             }
             for (j=0;j<17&&k<ns;j++) {
                 sys=code2sys(buff[9+3*j]);

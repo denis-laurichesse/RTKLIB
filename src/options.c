@@ -27,6 +27,7 @@
 *           2020/11/30  1.12 change options pos1-frequency, pos1-ionoopt,
 *                             pos1-tropopt, pos1-sateph, pos1-navsys,
 *                             pos2-gloarmode,
+*           2026/03/20  1.13 add file-snxbiasfile
 *-----------------------------------------------------------------------------*/
 #include "rtklib.h"
 
@@ -177,6 +178,7 @@ EXPORT opt_t sysopts[]={
     {"file-geoidfile",  2,  (void *)&filopt_.geoid,      ""     },
     {"file-ionofile",   2,  (void *)&filopt_.iono,       ""     },
     {"file-dcbfile",    2,  (void *)&filopt_.dcb,        ""     },
+    {"file-snxbiasfile",2,  (void *)&filopt_.snxbias,    ""     },
     {"file-eopfile",    2,  (void *)&filopt_.eop,        ""     },
     {"file-blqfile",    2,  (void *)&filopt_.blq,        ""     },
     {"file-tempdir",    2,  (void *)&filopt_.tempdir,    ""     },
@@ -497,6 +499,7 @@ extern void resetsysopts(void)
     filopt_.stapos [0]='\0';
     filopt_.geoid  [0]='\0';
     filopt_.dcb    [0]='\0';
+    filopt_.snxbias[0]='\0';
     filopt_.blq    [0]='\0';
     filopt_.solstat[0]='\0';
     filopt_.trace  [0]='\0';
