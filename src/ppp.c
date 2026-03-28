@@ -505,7 +505,8 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                       double phw, double *L, double *P,
                       double *Lc, double *Pc)
 {
-    static const int fallback_code_mask  = SYS_GAL|SYS_CMP;
+    static const int fallback_code_mask  = SYS_GAL|SYS_CMP;  
+/*    static const int fallback_code_mask  = SYS_GPS|SYS_GLO|SYS_GAL|SYS_QZS|SYS_CMP|SYS_IRN;  */  /* Version for HAS: fallback on every const. */
     static const int fallback_phase_mask = SYS_GPS|SYS_GLO|SYS_GAL|SYS_QZS|SYS_CMP|SYS_IRN;
 
     double freq[NFREQ]={0},C1,C2;

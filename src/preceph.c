@@ -139,7 +139,121 @@ static int addpeph(nav_t *nav, peph_t *peph)
     return 1;
 }
 /* read SP3 body -------------------------------------------------------------*/
+/* read SP3 body -------------------------------------------------------------*/
 static void readsp3b(FILE *fp, char type, int *sats, int ns, double *bfact,
+                     char *tsys, int index, int opt, nav_t *nav)
+{
+    peph_t peph;
+    gtime_t time;
+    double val,std,base;
+    long fpos;
+    int i,j,sat,sys,prn,v,eof;
+    int pred_o,pred_c;
+    char buff[1024];
+
+    trace(3,"readsp3b: type=%c ns=%d index=%d opt=%d\n",type,ns,index,opt);
+
+    (void)sats;
+    (void)ns;
+
+    eof=0;
+
+    while (fgets(buff,sizeof(buff),fp)) {
+
+        if (!strncmp(buff,"EOF",3)) break;
+
+        if (buff[0]!='*'||str2time(buff,3,28,&time)) {
+            trace(2,"sp3 invalid epoch %31.31s\n",buff);
+            continue;
+        }
+        if (!strcmp(tsys,"UTC")) time=utc2gpst(time); /* utc->gpst */
+
+        peph.time =time;
+        peph.index=index;
+
+        for (i=0;i<MAXSAT;i++) {
+            for (j=0;j<4;j++) {
+                peph.pos[i][j]=0.0;
+                peph.std[i][j]=0.0f;
+                peph.vel[i][j]=0.0;
+                peph.vst[i][j]=0.0f;
+            }
+            for (j=0;j<3;j++) {
+                peph.cov[i][j]=0.0f;
+                peph.vco[i][j]=0.0f;
+            }
+        }
+        v=0;
+
+        /* read all records of this epoch until next epoch marker or EOF */
+        for (;;) {
+
+            fpos=ftell(fp);
+
+            if (!fgets(buff,sizeof(buff),fp)) {
+                eof=1;
+                break;
+            }
+            if (!strncmp(buff,"EOF",3)) {
+                eof=1;
+                break;
+            }
+            if (buff[0]=='*') { /* next epoch */
+                fseek(fp,fpos,SEEK_SET);
+                break;
+            }
+            if (strlen(buff)<4) continue;
+
+            /* keep compatibility with current code: only P and V are used */
+            if (buff[0]!='P'&&buff[0]!='V') continue;
+
+            sys=buff[1]==' '?SYS_GPS:code2sys(buff[1]);
+            prn=(int)str2num(buff,2,2);
+            if      (sys==SYS_SBS) prn+=100;
+            else if (sys==SYS_QZS) prn+=192; /* extension to sp3-c */
+
+            if (!(sat=satno(sys,prn))) continue;
+
+            pred_c=(int)(strlen(buff)>=76&&buff[75]=='P');
+            pred_o=(int)(strlen(buff)>=80&&buff[79]=='P');
+
+            for (j=0;j<4;j++) {
+
+                /* read option for predicted value */
+                if (j< 3&&(opt&1)&& pred_o) continue;
+                if (j< 3&&(opt&2)&&!pred_o) continue;
+                if (j==3&&(opt&1)&& pred_c) continue;
+                if (j==3&&(opt&2)&&!pred_c) continue;
+
+                val=str2num(buff, 4+j*14,14);
+                std=str2num(buff,61+j* 3,j<3?2:3);
+
+                if (buff[0]=='P') { /* position */
+                    if (val!=0.0&&fabs(val-999999.999999)>=1E-6) {
+                        peph.pos[sat-1][j]=val*(j<3?1000.0:1E-6);
+                        if (j<3) v=1; /* valid epoch if at least one XYZ exists */
+                    }
+                    if ((base=bfact[j<3?0:1])>0.0&&std>0.0) {
+                        peph.std[sat-1][j]=(float)(pow(base,std)*(j<3?1E-3:1E-12));
+                    }
+                }
+                else { /* velocity */
+                    if (val!=0.0&&fabs(val-999999.999999)>=1E-6) {
+                        peph.vel[sat-1][j]=val*(j<3?0.1:1E-10);
+                    }
+                    if ((base=bfact[j<3?0:1])>0.0&&std>0.0) {
+                        peph.vst[sat-1][j]=(float)(pow(base,std)*(j<3?1E-7:1E-16));
+                    }
+                }
+            }
+        }
+        if (v) {
+            if (!addpeph(nav,&peph)) return;
+        }
+        if (eof) break;
+    }
+}
+static void readsp3b_ref(FILE *fp, char type, int *sats, int ns, double *bfact,
                      char *tsys, int index, int opt, nav_t *nav)
 {
     peph_t peph;
