@@ -1342,6 +1342,10 @@ EXPORT char *code2obs(uint8_t code);
 EXPORT double code2freq(int sys, uint8_t code, int fcn);
 EXPORT double sat2freq(int sat, uint8_t code, const nav_t *nav);
 EXPORT int  code2idx(int sys, uint8_t code);
+EXPORT double sigidx2freq(int sys, int idx, int fcn);
+EXPORT void satantofffreq(gtime_t time, const double *rs, int sat,
+                          const nav_t *nav, double *dantx, double *danty,
+                          double *dantz);
 EXPORT int  satexclude(int sat, double var, int svh, const prcopt_t *opt);
 EXPORT int  testsnr(int base, int freq, double el, double snr,
                     const snrmask_t *mask);

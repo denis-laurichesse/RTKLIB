@@ -661,8 +661,8 @@ static int sigband2idx(int sys, int band)
     case SYS_CMP:
         switch (band) {
         case 2: idx = 0; break; /* B1I  */
-        case 7: idx = 1; break; /* B2I/B2b */
-        case 6: idx = 2; break; break; /* B3   */
+        case 6: idx = 1; break; /* B3   */
+        case 7: idx = 2; break; /* B2I/B2b */
         case 1: idx = 3; break; /* B1C  */
         case 5: idx = 4; break; /* B2a  */
         case 8: idx = 5; break; /* B2ab */
@@ -751,6 +751,58 @@ static double sigband2freq(int sys, int band, int fcn)
         }
     }
     return 0.0;
+}
+
+extern double sigidx2freq(int sys, int idx, int fcn)
+{
+    int band;
+
+    if (idx<0||idx>=NFREQ) return 0.0;
+
+    for (band=1;band<=9;band++) {
+        if (sigband2idx(sys,band)==idx) {
+            return sigband2freq(sys,band,fcn);
+        }
+    }
+    return 0.0;
+}
+
+/* satellite antenna phase center offset in ECEF for all slots -------------- */
+extern void satantofffreq(gtime_t time, const double *rs, int sat,
+                          const nav_t *nav, double *dantx, double *danty,
+                          double *dantz)
+{
+    const pcv_t *pcv;
+    double ex[3],ey[3],ez[3],es[3],r[3],rsun[3],gmst,erpv[5]={0};
+    int i,j;
+
+    for (j=0;j<NFREQ;j++) {
+        dantx[j]=0.0;
+        danty[j]=0.0;
+        dantz[j]=0.0;
+    }
+    if (!nav||sat<=0||sat>MAXSAT) return;
+
+    pcv=nav->pcvs+sat-1;
+
+    sunmoonpos(gpst2utc(time),erpv,rsun,NULL,&gmst);
+
+    for (i=0;i<3;i++) r[i]=-rs[i];
+    if (!normv3(r,ez)) return;
+
+    for (i=0;i<3;i++) r[i]=rsun[i]-rs[i];
+    if (!normv3(r,es)) return;
+
+    cross3(ez,es,r);
+    if (!normv3(r,ey)) return;
+
+    cross3(ey,ez,ex);
+
+    for (j=0;j<NFREQ;j++) {
+        dantx[j]=pcv->off[j][0]*ex[0]+pcv->off[j][1]*ey[0]+pcv->off[j][2]*ez[0];
+        danty[j]=pcv->off[j][0]*ex[1]+pcv->off[j][1]*ey[1]+pcv->off[j][2]*ez[1];
+        dantz[j]=pcv->off[j][0]*ex[2]+pcv->off[j][1]*ey[2]+pcv->off[j][2]*ez[2];
+    }
 }
 
 /* observation code -> GNSS band number ------------------------------------ */

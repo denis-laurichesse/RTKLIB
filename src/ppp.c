@@ -742,39 +742,8 @@ if (sat) {
 }
 return x;
 }
-/* satellite antenna phase center offset in ECEF for all frequencies ---------*/
-static void satantofffreq(gtime_t time, const double *rs, int sat,
-                          const nav_t *nav, double *dantx, double *danty,
-                          double *dantz)
-{
-    const pcv_t *pcv=nav->pcvs+sat-1;
-    double ex[3],ey[3],ez[3],es[3],r[3],rsun[3],gmst,erpv[5]={0};
-    int i,j;
-
-    for (j=0;j<NFREQ;j++) {
-        dantx[j]=0.0;
-        danty[j]=0.0;
-        dantz[j]=0.0;
-    }
-    sunmoonpos(gpst2utc(time),erpv,rsun,NULL,&gmst);
-
-    for (i=0;i<3;i++) r[i]=-rs[i];
-    if (!normv3(r,ez)) return;
-
-    for (i=0;i<3;i++) r[i]=rsun[i]-rs[i];
-    if (!normv3(r,es)) return;
-
-    cross3(ez,es,r);
-    if (!normv3(r,ey)) return;
-
-    cross3(ey,ez,ex);
-
-    for (j=0;j<NFREQ;j++) {
-        dantx[j]=pcv->off[j][0]*ex[0]+pcv->off[j][1]*ey[0]+pcv->off[j][2]*ez[0];
-        danty[j]=pcv->off[j][0]*ex[1]+pcv->off[j][1]*ey[1]+pcv->off[j][2]*ez[1];
-        dantz[j]=pcv->off[j][0]*ex[2]+pcv->off[j][1]*ey[2]+pcv->off[j][2]*ez[2];
-    }
-}
+/* satellite antenna phase center offset in ECEF for all frequencies ---------
+ * implemented in rtkcmn.c to keep a single source of truth for satellite PCOs */
 /* build receiver/satellite antenna corrections by observation code ----------*/
 static void model_antcorr_ppp(const obsd_t *obs, const nav_t *nav,
                               const prcopt_t *opt, const double *rs,
@@ -784,7 +753,7 @@ static void model_antcorr_ppp(const obsd_t *obs, const nav_t *nav,
 {
     double dantr0[NFREQ]={0},dants0[NFREQ]={0};
     double dantx[NFREQ]={0},danty[NFREQ]={0},dantz[NFREQ]={0};
-    double dantn[NFREQ]={0};
+    double dantn[NFREQ]={0},dant_if[3]={0};
     double dsx,dsy,dsz;
     int k,sys=satsys(sat,NULL);
 
@@ -805,6 +774,7 @@ static void model_antcorr_ppp(const obsd_t *obs, const nav_t *nav,
     if (opt->posopt[0]) {
         satantpcv(rs,rr,nav->pcvs+sat-1,dants0);
         satantofffreq(obs->time,rs,sat,nav,dantx,danty,dantz);
+        satantoff(obs->time,rs,sat,nav,dant_if);
 
         for (k=0;k<NFREQ;k++) {
             dantn[k]=sqrt(SQR(dantx[k])+SQR(danty[k])+SQR(dantz[k]));
@@ -826,10 +796,11 @@ static void model_antcorr_ppp(const obsd_t *obs, const nav_t *nav,
                 continue;
             }
 
-            /* satellite correction = stock PCV + projected PCO */
-            dsx=sat2ant(sat,obs->code[k],dantx);
-            dsy=sat2ant(sat,obs->code[k],danty);
-            dsz=sat2ant(sat,obs->code[k],dantz);
+            /* rs is already referred to APC(IFLC slot0,slot1), so only apply */
+            /* the residual signal-dependent PCO: PCO_f - PCO_IFLC(slot0,slot1). */
+            dsx=sat2ant(sat,obs->code[k],dantx)-dant_if[0];
+            dsy=sat2ant(sat,obs->code[k],danty)-dant_if[1];
+            dsz=sat2ant(sat,obs->code[k],dantz)-dant_if[2];
 
             dants[k]=sat2ant(sat,obs->code[k],dants0)
                     +(e[0]*dsx+e[1]*dsy+e[2]*dsz);
@@ -841,6 +812,7 @@ static void model_antcorr_ppp(const obsd_t *obs, const nav_t *nav,
         antok[k]=1;
     }
 }
+
 /* temporal update of position -----------------------------------------------*/
 static void udpos_ppp(rtk_t *rtk)
 {
