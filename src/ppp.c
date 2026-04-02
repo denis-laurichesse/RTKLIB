@@ -498,6 +498,216 @@ static int use_phase_osb(const prcopt_t *opt, int sys)
     /* all other constellations controlled by pos2-armode */
     return opt->modear != ARMODE_OFF;
 }
+/* bias source selection driven by sateph ------------------------------------*/
+static int use_precise_code_bias(const prcopt_t *opt)
+{
+    return opt && opt->sateph==EPHOPT_PREC;
+}
+static int use_ssr_code_bias_mode(const prcopt_t *opt)
+{
+    return opt && (opt->sateph==EPHOPT_SSRAPC || opt->sateph==EPHOPT_SSRCOM);
+}
+typedef enum {
+    BIASSRC_SINEX = 0,
+    BIASSRC_SSR   = 1
+} biassrc_t;
+/* same carrier frequency? copied from sinexbias.c --------------------------*/
+static int same_obs_freq_ppp(int sat, uint8_t code1, uint8_t code2,
+                             const nav_t *nav)
+{
+    double f1,f2,df,fref;
+
+    if (!nav || code1==CODE_NONE || code2==CODE_NONE) return 0;
+
+    f1=sat2freq(sat,code1,(nav_t *)nav);
+    f2=sat2freq(sat,code2,(nav_t *)nav);
+
+    if (f1<=0.0 || f2<=0.0) return 0;
+
+    df=fabs(f1-f2);
+    fref=f1>f2?f1:f2;
+
+    return df<=1E-6*fref;
+}
+/* SINEX exact lookup only: disable internal fallback with fallback_mask=0 ---*/
+static int get_sinex_bias_exact(const nav_t *nav, gtime_t time, int sat,
+                                uint8_t code, int type,
+                                double *bias, double *std,
+                                uint8_t *code_used)
+{
+    if (bias) *bias=0.0;
+    if (std) *std=0.0;
+    if (code_used) *code_used=CODE_NONE;
+
+    if (!nav || !nav->osb) return 0;
+
+    return getsinexbias(nav->osb,time,sat,code,type,nav,0,bias,std,code_used);
+}
+/* get SSR code bias (0.0 assumed invalid/unavailable) -----------------------*/
+static int get_ssr_code_bias(const nav_t *nav, gtime_t time, int sat,
+                             uint8_t code, double *bias)
+{
+    const ssr_t *ssr;
+    double age,maxage;
+
+    if (!nav || !bias) return 0;
+    if (sat<=0 || sat>MAXSAT) return 0;
+    if (code<=CODE_NONE || code>MAXCODE) return 0;
+
+    ssr=nav->ssr+(sat-1);
+
+    if (ssr->t0[4].time==0) return 0;
+    if (ssr->cbias[code-1]==0.0) return 0;
+
+    age=fabs(timediff(time,ssr->t0[4]));
+    maxage=(ssr->udi[4]>0.0)?MAX(120.0,2.0*ssr->udi[4]+1.0):120.0;
+    if (age>maxage) return 0;
+
+    *bias=(double)ssr->cbias[code-1];
+    return 1;
+}
+/* get SSR phase bias (0.0 assumed invalid/unavailable) ----------------------*/
+static int get_ssr_phase_bias(const nav_t *nav, gtime_t time, int sat,
+                              uint8_t code, double *bias, double *stdbias)
+{
+    const ssr_t *ssr;
+    double age,maxage;
+
+    if (!nav || !bias) return 0;
+    if (sat<=0 || sat>MAXSAT) return 0;
+    if (code<=CODE_NONE || code>MAXCODE) return 0;
+
+    ssr=nav->ssr+(sat-1);
+
+    if (ssr->t0[5].time==0) return 0;
+    if (ssr->pbias[code-1]==0.0) return 0;
+
+    age=fabs(timediff(time,ssr->t0[5]));
+    maxage=(ssr->udi[5]>0.0)?MAX(120.0,2.0*ssr->udi[5]+1.0):120.0;
+    if (age>maxage) return 0;
+
+    *bias=ssr->pbias[code-1];
+    if (stdbias) *stdbias=(double)ssr->stdpb[code-1];
+    return 1;
+}
+/* SSR exact lookup only -----------------------------------------------------*/
+static int get_ssr_bias_exact(const nav_t *nav, gtime_t time, int sat,
+                              uint8_t code, int type,
+                              double *bias, double *std,
+                              uint8_t *code_used)
+{
+    if (bias) *bias=0.0;
+    if (std) *std=0.0;
+    if (code_used) *code_used=CODE_NONE;
+
+    if (type==BIAS_CODE) {
+        if (!get_ssr_code_bias(nav,time,sat,code,bias)) return 0;
+        if (code_used) *code_used=code;
+        return 1;
+    }
+    else if (type==BIAS_PHASE) {
+        if (!get_ssr_phase_bias(nav,time,sat,code,bias,std)) return 0;
+        if (code_used) *code_used=code;
+        return 1;
+    }
+    return 0;
+}
+/* unified exact+fallback resolver ------------------------------------------*/
+static int resolve_bias_with_fallback(biassrc_t src, const nav_t *nav,
+                                      gtime_t time, int sat,
+                                      uint8_t code, int type,
+                                      int fallback_mask,
+                                      double *bias, double *std,
+                                      uint8_t *code_used)
+{
+    double b=0.0,s=0.0;
+    uint8_t c,used=CODE_NONE;
+    int sys=satsys(sat,NULL);
+    char satid[16];
+
+    if (bias) *bias=0.0;
+    if (std) *std=0.0;
+    if (code_used) *code_used=CODE_NONE;
+
+    satno2id(sat,satid);
+
+    /* 1) exact first */
+    if (src==BIASSRC_SINEX) {
+        if (get_sinex_bias_exact(nav,time,sat,code,type,&b,&s,&used)) {
+            if (bias) *bias=b;
+            if (std) *std=s;
+            if (code_used) *code_used=used;
+
+            trace(3,
+                  "resolve_bias_with_fallback: sat=%s type=%s req=%s exact=%s src=%s bias=%.4f\n",
+                  satid,
+                  type==BIAS_CODE?"CODE":"PHASE",
+                  code2obs(code),code2obs(used),
+                  "SINEX",b);
+            return 1;
+        }
+    }
+    else {
+        if (get_ssr_bias_exact(nav,time,sat,code,type,&b,&s,&used)) {
+            if (bias) *bias=b;
+            if (std) *std=s;
+            if (code_used) *code_used=used;
+
+            trace(3,
+                  "resolve_bias_with_fallback: sat=%s type=%s req=%s exact=%s src=%s bias=%.4f\n",
+                  satid,
+                  type==BIAS_CODE?"CODE":"PHASE",
+                  code2obs(code),code2obs(used),
+                  "SSR",b);
+            return 1;
+        }
+    }
+
+    /* 2) fallback disabled */
+    if (!nav || !(sys & fallback_mask)) {
+        trace(4,
+              "resolve_bias_with_fallback: sat=%s type=%s req=%s src=%s no_exact no_fallback(mask)\n",
+              satid,
+              type==BIAS_CODE?"CODE":"PHASE",
+              code2obs(code),
+              src==BIASSRC_SINEX?"SINEX":"SSR");
+        return 0;
+    }
+
+    /* 3) same-frequency fallback, identical policy for SINEX and SSR */
+    for (c=1; c<=MAXCODE; c++) {
+        if (c==code) continue;
+        if (!same_obs_freq_ppp(sat,code,c,nav)) continue;
+
+        if (src==BIASSRC_SINEX) {
+            if (!get_sinex_bias_exact(nav,time,sat,c,type,&b,&s,&used)) continue;
+        }
+        else {
+            if (!get_ssr_bias_exact(nav,time,sat,c,type,&b,&s,&used)) continue;
+        }
+
+        if (bias) *bias=b;
+        if (std) *std=s;
+        if (code_used) *code_used=used;
+
+        trace(3,
+              "resolve_bias_with_fallback: sat=%s type=%s req=%s fallback=%s src=%s bias=%.4f\n",
+              satid,
+              type==BIAS_CODE?"CODE":"PHASE",
+              code2obs(code),code2obs(used),
+              src==BIASSRC_SINEX?"SINEX":"SSR",
+              b);
+        return 1;
+    }
+
+    trace(4,
+          "resolve_bias_with_fallback: sat=%s type=%s req=%s src=%s no_exact no_fallback(match)\n",
+          satid,
+          type==BIAS_CODE?"CODE":"PHASE",
+          code2obs(code),
+          src==BIASSRC_SINEX?"SINEX":"SSR");
+    return 0;
+}
 /* antenna corrected measurements --------------------------------------------*/
 static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                       const prcopt_t *opt, const double *dantr,
@@ -505,8 +715,8 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                       double phw, double *L, double *P,
                       double *Lc, double *Pc)
 {
-    static const int fallback_code_mask  = SYS_GAL|SYS_CMP;  
-/*    static const int fallback_code_mask  = SYS_GPS|SYS_GLO|SYS_GAL|SYS_QZS|SYS_CMP|SYS_IRN;  */  /* Version for HAS: fallback on every const. */
+    static const int fallback_code_mask  = SYS_GAL|SYS_CMP;
+/*  static const int fallback_code_mask  = SYS_GPS|SYS_GLO|SYS_GAL|SYS_QZS|SYS_CMP|SYS_IRN; */
     static const int fallback_phase_mask = SYS_GPS|SYS_GLO|SYS_GAL|SYS_QZS|SYS_CMP|SYS_IRN;
 
     double freq[NFREQ]={0},C1,C2;
@@ -533,37 +743,38 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         code_used_code = obs->code[i];
         code_used_phase = obs->code[i];
 
-        if (nav->osb) {
-            /* code bias: always applied if available */
-            if (!getsinexbias(nav->osb, obs->time, obs->sat, obs->code[i],
-                              BIAS_CODE, nav, fallback_code_mask,
-                              &bcode, NULL, &code_used_code)) {
+        if (use_precise_code_bias(opt)) {
+
+            if (!resolve_bias_with_fallback(BIASSRC_SINEX, nav, obs->time, obs->sat,
+                                            obs->code[i], BIAS_CODE,
+                                            fallback_code_mask,
+                                            &bcode, NULL, &code_used_code)) {
                 trace(3,"corr_meas: no SINEX code bias sat=%d code=%d\n",
                       obs->sat,(int)obs->code[i]);
                 continue;
             }
 
-           Praw -= bcode; /* code bias already in meters */
+            Praw -= bcode; /* SINEX convention */
 
             if (code_used_code != obs->code[i]) {
-                trace(3,"corr_meas: code fallback sat=%d code=%d->%d bias=%.4f m\n",
+                trace(3,"corr_meas: SINEX code fallback sat=%d code=%d->%d bias=%.4f m\n",
                       obs->sat,(int)obs->code[i],(int)code_used_code,bcode);
             }
 
-            /* phase bias: apply only if AR is enabled for this constellation */
             if (apply_phase_bias) {
-                if (!getsinexbias(nav->osb, obs->time, obs->sat, obs->code[i],
-                                  BIAS_PHASE, nav, fallback_phase_mask,
-                                  &bphase, NULL, &code_used_phase)) {
+                if (!resolve_bias_with_fallback(BIASSRC_SINEX, nav, obs->time, obs->sat,
+                                                obs->code[i], BIAS_PHASE,
+                                                fallback_phase_mask,
+                                                &bphase, NULL, &code_used_phase)) {
                     trace(3,"corr_meas: no SINEX phase bias sat=%d code=%d\n",
                           obs->sat,(int)obs->code[i]);
                     continue;
                 }
 
-                Lraw -= bphase * freq[i] / CLIGHT; /* phase bias m -> cycles */
+                Lraw -= bphase * freq[i] / CLIGHT; /* SINEX convention */
 
                 if (code_used_phase != obs->code[i]) {
-                    trace(3,"corr_meas: phase fallback sat=%d code=%d->%d bias=%.4f m\n",
+                    trace(3,"corr_meas: SINEX phase fallback sat=%d code=%d->%d bias=%.4f m\n",
                           obs->sat,(int)obs->code[i],(int)code_used_phase,bphase);
                 }
             }
@@ -572,20 +783,58 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                       obs->sat,sys,(int)obs->code[i],opt->modear,opt->glomodear);
             }
         }
+        else if (use_ssr_code_bias_mode(opt)) {
+
+            if (!resolve_bias_with_fallback(BIASSRC_SSR, nav, obs->time, obs->sat,
+                                            obs->code[i], BIAS_CODE,
+                                            fallback_code_mask,
+                                            &bcode, NULL, &code_used_code)) {
+                trace(3,"corr_meas: no SSR code bias sat=%d code=%d sateph=%d\n",
+                      obs->sat,(int)obs->code[i],opt->sateph);
+                continue;
+            }
+
+            Praw += bcode; /* IGS SSR convention */
+
+            if (code_used_code != obs->code[i]) {
+                trace(3,"corr_meas: SSR code fallback sat=%d code=%d->%d bias=%.4f m\n",
+                      obs->sat,(int)obs->code[i],(int)code_used_code,bcode);
+            }
+
+            if (apply_phase_bias) {
+                double stdpbias=0.0;
+
+                if (!resolve_bias_with_fallback(BIASSRC_SSR, nav, obs->time, obs->sat,
+                                                obs->code[i], BIAS_PHASE,
+                                                fallback_phase_mask,
+                                                &bphase, &stdpbias, &code_used_phase)) {
+                    trace(3,"corr_meas: no SSR phase bias sat=%d code=%d sateph=%d\n",
+                          obs->sat,(int)obs->code[i],opt->sateph);
+                    continue;
+                }
+
+                Lraw += bphase * freq[i] / CLIGHT; /* IGS SSR convention */
+
+                if (code_used_phase != obs->code[i]) {
+                    trace(3,"corr_meas: SSR phase fallback sat=%d code=%d->%d bias=%.4f m\n",
+                          obs->sat,(int)obs->code[i],(int)code_used_phase,bphase);
+                }
+                trace(4,"corr_meas: SSR phase bias sat=%d code=%d bias=%.4f m std=%.4f m\n",
+                      obs->sat,(int)obs->code[i],bphase,stdpbias);
+            }
+        }
         else {
-            /* legacy RTKLIB behaviour if no SINEX OSB loaded */
+            /* legacy RTKLIB behaviour */
             if (sys==SYS_GPS||sys==SYS_GLO) {
                 if (obs->code[i]==CODE_L1C) Praw += nav->cbias[obs->sat-1][1];
                 if (obs->code[i]==CODE_L2C) Praw += nav->cbias[obs->sat-1][2];
             }
         }
 
-        /* then continue with antenna / wind-up corrections */
         L[i] = Lraw*CLIGHT/freq[i] - dants[i] - dantr[i] - phw*CLIGHT/freq[i];
         P[i] = Praw                - dants[i] - dantr[i];
     }
 
-    /* iono-free LC */
     *Lc=*Pc=0.0;
     if (freq[0]==0.0||freq[1]==0.0) return;
     C1= SQR(freq[0])/(SQR(freq[0])-SQR(freq[1]));
@@ -756,6 +1005,7 @@ static void model_antcorr_ppp(const obsd_t *obs, const nav_t *nav,
     double dantn[NFREQ]={0},dant_if[3]={0};
     double dsx,dsy,dsz;
     int k,sys=satsys(sat,NULL);
+    int have_iflc_ref_pco=0;
 
     for (k=0;k<NFREQ;k++) {
         dantr[k]=0.0;
@@ -779,6 +1029,7 @@ static void model_antcorr_ppp(const obsd_t *obs, const nav_t *nav,
         for (k=0;k<NFREQ;k++) {
             dantn[k]=sqrt(SQR(dantx[k])+SQR(danty[k])+SQR(dantz[k]));
         }
+        have_iflc_ref_pco=(NFREQ>=2&&dantn[0]!=0.0&&dantn[1]!=0.0);
     }
 
     for (k=0;k<NFREQ;k++) {
@@ -796,8 +1047,13 @@ static void model_antcorr_ppp(const obsd_t *obs, const nav_t *nav,
                 continue;
             }
 
-            /* rs is already referred to APC(IFLC slot0,slot1), so only apply */
-            /* the residual signal-dependent PCO: PCO_f - PCO_IFLC(slot0,slot1). */
+            if (opt->sateph==EPHOPT_SSRAPC && !have_iflc_ref_pco) {
+                trace(3,
+                      "model_antcorr_ppp: reject sat=%2d code=%d f=%d (SSR APC IFLC PCO unavailable)\n",
+                      sat,(int)obs->code[k],k+1);
+                continue;
+            }
+
             dsx=sat2ant(sat,obs->code[k],dantx)-dant_if[0];
             dsy=sat2ant(sat,obs->code[k],danty)-dant_if[1];
             dsz=sat2ant(sat,obs->code[k],dantz)-dant_if[2];
@@ -1658,6 +1914,18 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     
     /* satellite positions and clocks */
     satposs(obs[0].time,obs,n,nav,rtk->opt.sateph,rs,dts,var,svh);
+
+    /* trace APC satellite orbits for precise and SSR-APC modes */
+    if (rtk->opt.sateph==EPHOPT_PREC||rtk->opt.sateph==EPHOPT_SSRAPC) {
+        char t_apc[64], satid[16];
+        time2str(obs[0].time,t_apc,3);
+        for (i=0;i<n&&i<MAXOBS;i++) {
+            if (norm(rs+i*6,3)<=0.0) continue;
+            satno2id(obs[i].sat,satid);
+            trace(2,"apc_orb: %s %s %.4f %.4f %.4f\n",
+                  t_apc,satid,rs[i*6],rs[1+i*6],rs[2+i*6]);
+        }
+    }
     
     /* exclude measurements of eclipsing satellite (block IIA) */
     if (rtk->opt.posopt[3]) {

@@ -607,6 +607,7 @@ static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     const ssr_t *ssr;
     eph_t *eph;
     double t1,t2,t3,er[3],ea[3],ec[3],rc[3],deph[3],dclk,dant[3]={0},tk;
+    double rs_brdc[3],rs_corr[3];
     int i,sys;
     
     trace(4,"satpos_ssr: time=%s sat=%2d\n",time_str(time,3),sat);
@@ -657,6 +658,7 @@ static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     }
     /* satellite postion and clock by broadcast ephemeris */
     if (!ephpos(time,teph,sat,nav,ssr->iode,rs,dts,var,svh)) return 0;
+    for (i=0;i<3;i++) rs_brdc[i]=rs[i];
     
     /* satellite clock for gps, galileo and qzss */
     sys=satsys(sat,NULL);
@@ -686,6 +688,7 @@ static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     }
     for (i=0;i<3;i++) {
         rs[i]+=-(er[i]*deph[0]+ea[i]*deph[1]+ec[i]*deph[2])+dant[i];
+        rs_corr[i]=rs[i];
     }
     /* t_corr = t_sv - (dts(brdc) + dclk(ssr) / CLIGHT) (ref [10] eq.3.12-7) */
     dts[0]+=dclk/CLIGHT;
@@ -725,8 +728,8 @@ extern int satpos(gtime_t time, gtime_t teph, int sat, int ephopt,
     switch (ephopt) {
         case EPHOPT_BRDC  : return ephpos     (time,teph,sat,nav,-1,rs,dts,var,svh);
         case EPHOPT_SBAS  : return satpos_sbas(time,teph,sat,nav,   rs,dts,var,svh);
-        case EPHOPT_SSRAPC: return satpos_ssr (time,teph,sat,nav, 0,rs,dts,var,svh);
-        case EPHOPT_SSRCOM: return satpos_ssr (time,teph,sat,nav, 1,rs,dts,var,svh);
+        case EPHOPT_SSRAPC: return satpos_ssr (time,teph,sat,nav, 1,rs,dts,var,svh);
+        case EPHOPT_SSRCOM: return satpos_ssr (time,teph,sat,nav, 0,rs,dts,var,svh);
         case EPHOPT_PREC  :
             if (!peph2pos(time,sat,nav,1,rs,dts,var)) break; else return 1;
     }
