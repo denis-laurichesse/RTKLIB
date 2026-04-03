@@ -728,8 +728,8 @@ extern int satpos(gtime_t time, gtime_t teph, int sat, int ephopt,
     switch (ephopt) {
         case EPHOPT_BRDC  : return ephpos     (time,teph,sat,nav,-1,rs,dts,var,svh);
         case EPHOPT_SBAS  : return satpos_sbas(time,teph,sat,nav,   rs,dts,var,svh);
-        case EPHOPT_SSRAPC: return satpos_ssr (time,teph,sat,nav, 1,rs,dts,var,svh);
-        case EPHOPT_SSRCOM: return satpos_ssr (time,teph,sat,nav, 0,rs,dts,var,svh);
+        case EPHOPT_SSRAPC: return satpos_ssr (time,teph,sat,nav, 0,rs,dts,var,svh);
+        case EPHOPT_SSRCOM: return satpos_ssr (time,teph,sat,nav, 1,rs,dts,var,svh);
         case EPHOPT_PREC  :
             if (!peph2pos(time,sat,nav,1,rs,dts,var)) break; else return 1;
     }
