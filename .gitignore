@@ -9,3 +9,11 @@ Debug
 Debug_Build
 __history
 __astcache
+
+# Ignore compilation results
+
+bin/*
+lib/libRTKLib.so*
+lib/librtklib.so
+lib/iers/gcc/*
+app/consapp/rnx2rtkp/gcc/rnx2rtkp

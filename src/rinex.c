@@ -640,14 +640,14 @@ static void decode_hnavh(char *buff, nav_t *nav)
 }
 /* read RINEX file header ----------------------------------------------------*/
 static int readrnxh(FILE *fp, double *ver, char *type, int *sys, int *tsys,
-                    char tobs[][MAXOBSTYPE][4], nav_t *nav, sta_t *sta)
+                    char tobs[][MAXOBSTYPE][4], nav_t *nav, sta_t *sta, int flag)
 {
     char buff[MAXRNXLEN],*label=buff+60;
     int i=0;
     
     trace(3,"readrnxh:\n");
     
-    *ver=2.10; *type=' '; *sys=SYS_GPS;
+    *ver=2.10; *type=' '; *sys=SYS_GPS; *tsys=TSYS_GPS;
     
     while (fgets(buff,MAXRNXLEN,fp)) {
         
@@ -656,10 +656,31 @@ static int readrnxh(FILE *fp, double *ver, char *type, int *sys, int *tsys,
         }
         else if (strstr(label,"RINEX VERSION / TYPE")) {
             *ver=str2num(buff,0,9);
-            *type=*(buff+20);
+            char sc;
+            if (*ver >= 3.04) {
+              /* The format changed for clock files >=3.04. */
+              if (flag == 1) { /* Expecting a clock file. */
+                *type = buff[21];
+                sc = buff[42];
+                if (*type != 'C') {
+                  *type = buff[20];
+                  sc = buff[40];
+                }
+              } else { /* Not expecting a clock file. */
+                *type = buff[20];
+                sc = buff[40];
+                if (*type == ' ' && buff[21] == 'C') {
+                  *type = buff[21];
+                  sc = buff[42];
+                }
+              }
+            } else {
+              *type = buff[20];
+              sc = buff[40];
+            }
             
-            /* satellite system */
-            switch (*(buff+40)) {
+            /* Satellite system */
+            switch (sc) {
                 case ' ':
                 case 'G': *sys=SYS_GPS;  *tsys=TSYS_GPS; break;
                 case 'R': *sys=SYS_GLO;  *tsys=TSYS_UTC; break;
@@ -670,7 +691,7 @@ static int readrnxh(FILE *fp, double *ver, char *type, int *sys, int *tsys,
                 case 'I': *sys=SYS_IRN;  *tsys=TSYS_IRN; break; /* v.3.03 */
                 case 'M': *sys=SYS_NONE; *tsys=TSYS_GPS; break; /* mixed */
                 default :
-                    trace(2,"not supported satellite system: %c\n",*(buff+40));
+                    trace(2,"not supported satellite system: %c\n", sc);
                     break;
             }
             continue;
@@ -1429,13 +1450,14 @@ static int readrnxnav(FILE *fp, const char *opt, double ver, int sys,
     return nav->n>0||nav->ng>0||nav->ns>0;
 }
 /* read RINEX clock ----------------------------------------------------------*/
-static int readrnxclk(FILE *fp, const char *opt, int index, nav_t *nav)
+static int readrnxclk(FILE *fp, const char *opt, double ver, int index, nav_t *nav)
 {
     pclk_t *nav_pclk;
     gtime_t time;
     double data[2];
     int i,j,sat,mask;
     char buff[MAXRNXLEN],satid[8]="";
+    int off=ver>=3.04?5:0; /* format change for ver>=3.04 */
     
     trace(3,"readrnxclk: index=%d\n", index);
     
@@ -1446,18 +1468,20 @@ static int readrnxclk(FILE *fp, const char *opt, int index, nav_t *nav)
     
     while (fgets(buff,sizeof(buff),fp)) {
         
-        if (str2time(buff,8,26,&time)) {
+        if (str2time(buff,8+off,26,&time)) {
             trace(2,"rinex clk invalid epoch: %34.34s\n",buff);
             continue;
         }
         strncpy(satid,buff+3,4);
         
+        trace(3,"readrnxclk: sat=%d\n", sat);
+
         /* only read AS (satellite clock) record */
         if (strncmp(buff,"AS",2)||!(sat=satid2no(satid))) continue;
         
         if (!(satsys(sat,NULL)&mask)) continue;
         
-        for (i=0,j=40;i<2;i++,j+=20) data[i]=str2num(buff,j,19);
+        for (i=0,j=40+off;i<2;i++,j+=20) data[i]=str2num(buff,j,19);
         
         if (nav->nc>=nav->ncmax) {
             nav->ncmax+=1024;
@@ -1494,7 +1518,7 @@ static int readrnxfp(FILE *fp, gtime_t ts, gtime_t te, double tint,
     trace(3,"readrnxfp: flag=%d index=%d\n",flag,index);
     
     /* read RINEX file header */
-    if (!readrnxh(fp,&ver,type,&sys,&tsys,tobs,nav,sta)) return 0;
+    if (!readrnxh(fp,&ver,type,&sys,&tsys,tobs,nav,sta,flag)) return 0;
     
     /* flag=0:except for clock,1:clock */
     if ((!flag&&*type=='C')||(flag&&*type!='C')) return 0;
@@ -1508,7 +1532,7 @@ static int readrnxfp(FILE *fp, gtime_t ts, gtime_t te, double tint,
         case 'H': return readrnxnav(fp,opt,ver,SYS_SBS,nav);
         case 'J': return readrnxnav(fp,opt,ver,SYS_QZS,nav); /* extension */
         case 'L': return readrnxnav(fp,opt,ver,SYS_GAL,nav); /* extension */
-        case 'C': return readrnxclk(fp,opt,index,nav);
+        case 'C': return readrnxclk(fp,opt,ver,index,nav);
     }
     trace(2,"unsupported rinex type ver=%.2f type=%c\n",ver,*type);
     return 0;
@@ -1783,7 +1807,7 @@ extern int open_rnxctr(rnxctr_t *rnx, FILE *fp)
     trace(3,"open_rnxctr:\n");
     
     /* read RINEX header from file */
-    if (!readrnxh(fp,&ver,&type,&sys,&tsys,tobs,&rnx->nav,&rnx->sta)) {
+    if (!readrnxh(fp,&ver,&type,&sys,&tsys,tobs,&rnx->nav,&rnx->sta,0)) {
         trace(2,"open_rnxctr: rinex header read error\n");
         return 0;
     }
